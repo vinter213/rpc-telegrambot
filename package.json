@@ -1,0 +1,13 @@
+{
+  "name": "rpc-order-bot-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secure Telegram ticket API for RPC Orders",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
