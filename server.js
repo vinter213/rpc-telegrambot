@@ -126,21 +126,48 @@ function databaseConfigured() {
 
 async function supabaseRequest(path, options = {}) {
   if (!databaseConfigured()) throw new Error("DATABASE_NOT_CONFIGURED");
+
+  // New Supabase keys (sb_secret_...) are opaque API keys, not JWTs.
+  // They must be sent only in the apikey header. Legacy service_role keys
+  // are JWTs, so Authorization: Bearer remains valid for those keys.
+  const authHeaders = {
+    apikey: SUPABASE_SECRET_KEY,
+    "Content-Type": "application/json"
+  };
+
+  if (!SUPABASE_SECRET_KEY.startsWith("sb_secret_")) {
+    authHeaders.Authorization = `Bearer ${SUPABASE_SECRET_KEY}`;
+  }
+
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
-      apikey: SUPABASE_SECRET_KEY,
-      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-      "Content-Type": "application/json",
+      ...authHeaders,
       ...(options.headers || {})
     },
     signal: AbortSignal.timeout(15_000)
   });
-  const result = await response.json().catch(() => ({}));
+
+  const raw = await response.text();
+  let result = {};
+  try {
+    result = raw ? JSON.parse(raw) : {};
+  } catch {
+    result = { message: raw };
+  }
+
   if (!response.ok) {
-    console.error("Supabase error:", response.status, result);
+    console.error("Supabase error:", {
+      status: response.status,
+      path,
+      code: result?.code,
+      message: result?.message,
+      details: result?.details,
+      hint: result?.hint
+    });
     throw new Error("DATABASE_REQUEST_FAILED");
   }
+
   return result;
 }
 
