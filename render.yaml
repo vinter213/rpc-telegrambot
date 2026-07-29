@@ -1,19 +1,24 @@
 services:
   - type: web
-    name: rpc-order-bot-vinter294
+    name: rpc-telegrambot
     runtime: node
-    plan: free
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
-        value: 22
+        value: "22"
       - key: ALLOWED_ORIGIN
         value: https://rpc-order-website.onrender.com
+      - key: REVIEWS_AUTO_APPROVE
+        value: "true"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: TELEGRAM_MESSAGE_THREAD_ID
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
         sync: false

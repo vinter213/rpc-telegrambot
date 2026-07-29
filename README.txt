@@ -1,36 +1,54 @@
-RPC ORDER BOT API
+RPC API 2.0 — Telegram, файлы, отзывы и общая статистика
 
-Этот проект — защищённый сервер между сайтом заказов и Telegram-ботом.
-Токен бота нельзя добавлять в index.html или app.js.
+1. Замените в GitHub старые файлы API этими файлами:
+   server.js
+   package.json
+   render.yaml
+   .gitignore
+   supabase-setup.sql
 
-Файлы загружаются в отдельный GitHub-репозиторий без папок:
-- package.json
-- server.js
-- render.yaml
-- .gitignore
-- README.txt
+2. Создайте бесплатный проект Supabase.
 
-Рекомендуемое имя репозитория:
-rpc-order-bot-api
+3. Откройте Supabase -> SQL Editor -> New query.
+   Вставьте содержимое supabase-setup.sql и нажмите Run.
 
-НАСТРОЙКА RENDER
-1. Render → New → Web Service.
-2. Подключите репозиторий rpc-order-bot-api.
-3. Name: rpc-order-bot-vinter294
-4. Runtime: Node
-5. Build Command: npm install
-6. Start Command: npm start
-7. Health Check Path: /health
+4. В Supabase откройте Settings -> API Keys / Connect.
+   Скопируйте:
+   - Project URL
+   - Secret key (или старый service_role key)
 
-ENVIRONMENT VARIABLES
-TELEGRAM_BOT_TOKEN = токен от BotFather
-TELEGRAM_CHAT_ID = числовой ID личного чата или группы
-ALLOWED_ORIGIN = https://rpc-order-website.onrender.com
-TELEGRAM_MESSAGE_THREAD_ID = оставить пустым, если бот пишет не в тему форума
+5. В Render -> rpc-telegrambot -> Environment добавьте:
+   SUPABASE_URL=https://ВАШ-ПРОЕКТ.supabase.co
+   SUPABASE_SECRET_KEY=sb_secret_... или service_role key
+   REVIEWS_AUTO_APPROVE=true
 
-ВАЖНО
-- Сначала отправьте боту /start.
-- Не публикуйте токен в GitHub.
-- После деплоя откройте /health. Должно быть: {"ok":true,"configured":true}
-- Если адрес Web Service отличается от https://rpc-order-bot-vinter294.onrender.com,
-  замените TICKET_API_URL в app.js сайта заказов.
+   Уже существующие переменные оставьте:
+   TELEGRAM_BOT_TOKEN
+   TELEGRAM_CHAT_ID
+   ALLOWED_ORIGIN=https://rpc-order-website.onrender.com
+
+6. Нажмите Save, rebuild, and deploy.
+
+7. Проверьте:
+   https://rpc-telegrambot.onrender.com/health
+
+Ожидаемый ответ:
+{
+  "ok": true,
+  "configured": true,
+  "databaseConfigured": true,
+  "reviewsAutoApprove": true
+}
+
+Файлы тикета:
+- до 5 файлов;
+- до 10 МБ каждый;
+- до 30 МБ суммарно;
+- отправляются в Telegram после текста заявки.
+
+Отзывы:
+REVIEWS_AUTO_APPROVE=true  — публикуются сразу.
+REVIEWS_AUTO_APPROVE=false — сохраняются как approved=false.
+Чтобы вручную опубликовать отзыв: Supabase -> Table Editor -> reviews -> approved=true.
+
+Никогда не загружайте SUPABASE_SECRET_KEY и TELEGRAM_BOT_TOKEN в GitHub.
