@@ -1,8 +1,8 @@
 {
   "name": "rpc-order-bot-api",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "RPC Orders API: Telegram tickets, file uploads, reviews and synchronized visitor stats",
+  "description": "RPC Orders API: Telegram tickets, file uploads, reviews, synchronized visitor stats, bilingual UI support and Turnstile protection",
   "type": "module",
   "engines": {
     "node": ">=20"

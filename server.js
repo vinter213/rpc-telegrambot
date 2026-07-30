@@ -8,9 +8,32 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const THREAD_ID = process.env.TELEGRAM_MESSAGE_THREAD_ID || "";
 const PRIMARY_ORIGIN = (process.env.ALLOWED_ORIGIN || "https://rpc-order-website.onrender.com").replace(/\/$/, "");
-const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const SUPABASE_URL_RAW = String(process.env.SUPABASE_URL || "").trim();
+
+function normalizeSupabaseUrl(value) {
+  if (!value) return "";
+
+  let normalized = value.replace(/\/+$/, "");
+
+  // Supabase may show either the Project URL or the full Data API URL.
+  // The request helper below adds /rest/v1 itself, so strip it here when present.
+  normalized = normalized.replace(/\/rest\/v1$/i, "");
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+const SUPABASE_URL = normalizeSupabaseUrl(SUPABASE_URL_RAW);
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const REVIEWS_AUTO_APPROVE = String(process.env.REVIEWS_AUTO_APPROVE || "true").toLowerCase() === "true";
+const TURNSTILE_SITE_KEY = String(process.env.TURNSTILE_SITE_KEY || "").trim();
+const TURNSTILE_SECRET_KEY = String(process.env.TURNSTILE_SECRET_KEY || "").trim();
+const TURNSTILE_REQUIRED = String(process.env.TURNSTILE_REQUIRED || "true").toLowerCase() !== "false";
 
 const allowedOrigins = new Set([
   PRIMARY_ORIGIN,
@@ -21,6 +44,12 @@ const allowedOrigins = new Set([
 ]);
 
 const rateLimits = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of rateLimits.entries()) {
+    if (now - value.startedAt > 24 * 60 * 60 * 1000) rateLimits.delete(key);
+  }
+}, 60 * 60 * 1000).unref();
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = new Set([
@@ -96,7 +125,72 @@ function allowPublicRead(req, res, next) {
 }
 
 function clean(value, maxLength) {
-  return String(value ?? "").replace(/\u0000/g, "").trim().slice(0, maxLength);
+  return String(value ?? "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/[<>]/g, "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function requestLanguage(req) {
+  return clean(req.body?.language, 5) === "en" ? "en" : "ru";
+}
+
+function localized(req, ru, en) {
+  return requestLanguage(req) === "en" ? en : ru;
+}
+
+function validTelegram(value) {
+  return /^@[A-Za-z0-9_]{5,32}$/.test(clean(value, 80));
+}
+
+function validFormTiming(value) {
+  const startedAt = Number(value);
+  if (!Number.isFinite(startedAt)) return false;
+  const elapsed = Date.now() - startedAt;
+  return elapsed >= 1200 && elapsed <= 6 * 60 * 60 * 1000;
+}
+
+function turnstileConfigured() {
+  return Boolean(TURNSTILE_SITE_KEY && TURNSTILE_SECRET_KEY);
+}
+
+async function verifyTurnstile(token, ip) {
+  if (!TURNSTILE_REQUIRED) return true;
+  if (!turnstileConfigured()) throw new Error("TURNSTILE_NOT_CONFIGURED");
+  const form = new URLSearchParams();
+  form.set("secret", TURNSTILE_SECRET_KEY);
+  form.set("response", clean(token, 4096));
+  if (ip && ip !== "unknown") form.set("remoteip", ip);
+  const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form,
+    signal: AbortSignal.timeout(12_000)
+  });
+  const result = await response.json().catch(() => ({}));
+  return Boolean(response.ok && result.success);
+}
+
+function fileMatchesSignature(file) {
+  const name = clean(file.originalname, 180).toLowerCase();
+  const extension = name.match(/\.[a-z0-9]+$/)?.[0] || "";
+  const bytes = file.buffer;
+  const ascii = bytes.subarray(0, 32).toString("ascii");
+  const starts = (...values) => values.every((value, index) => bytes[index] === value);
+  if (extension === ".png") return starts(0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a);
+  if ([".jpg",".jpeg"].includes(extension)) return starts(0xff,0xd8,0xff);
+  if (extension === ".gif") return ascii.startsWith("GIF87a") || ascii.startsWith("GIF89a");
+  if (extension === ".webp") return ascii.startsWith("RIFF") && ascii.slice(8,12) === "WEBP";
+  if (extension === ".pdf") return ascii.startsWith("%PDF-");
+  if ([".zip",".unitypackage"].includes(extension)) return starts(0x50,0x4b) || starts(0x1f,0x8b);
+  if (extension === ".rar") return ascii.startsWith("Rar!");
+  if (extension === ".7z") return starts(0x37,0x7a,0xbc,0xaf,0x27,0x1c);
+  if ([".mp4",".mov"].includes(extension)) return ascii.includes("ftyp");
+  if (extension === ".blend") return ascii.startsWith("BLENDER");
+  if (extension === ".fbx") return ascii.startsWith("Kaydara FBX Binary") || !bytes.includes(0);
+  if (extension === ".obj") return !bytes.includes(0);
+  return false;
 }
 
 function categoryLabel(value) {
@@ -139,7 +233,10 @@ async function supabaseRequest(path, options = {}) {
     authHeaders.Authorization = `Bearer ${SUPABASE_SECRET_KEY}`;
   }
 
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+  const cleanPath = String(path || "").replace(/^\/+/, "");
+  const requestUrl = new URL(`rest/v1/${cleanPath}`, `${SUPABASE_URL}/`).toString();
+
+  const response = await fetch(requestUrl, {
     ...options,
     headers: {
       ...authHeaders,
@@ -234,7 +331,16 @@ app.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "RPC Orders API",
-    endpoints: ["/health", "/api/tickets", "/api/stats", "/api/visit", "/api/presence", "/api/reviews"]
+    endpoints: ["/health", "/api/public-config", "/api/tickets", "/api/stats", "/api/visit", "/api/presence", "/api/reviews"]
+  });
+});
+
+app.get("/api/public-config", allowPublicRead, (_req, res) => {
+  res.json({
+    ok: true,
+    turnstileRequired: TURNSTILE_REQUIRED,
+    turnstileConfigured: turnstileConfigured(),
+    turnstileSiteKey: TURNSTILE_SITE_KEY || null
   });
 });
 
@@ -243,7 +349,11 @@ app.get("/health", (_req, res) => {
     ok: true,
     configured: Boolean(BOT_TOKEN && CHAT_ID),
     databaseConfigured: databaseConfigured(),
-    reviewsAutoApprove: REVIEWS_AUTO_APPROVE
+    databaseUrlValid: Boolean(SUPABASE_URL),
+    databaseHost: SUPABASE_URL ? new URL(SUPABASE_URL).host : null,
+    reviewsAutoApprove: REVIEWS_AUTO_APPROVE,
+    turnstileRequired: TURNSTILE_REQUIRED,
+    turnstileConfigured: turnstileConfigured()
   });
 });
 
@@ -300,17 +410,28 @@ app.get("/api/reviews", allowPublicRead, async (_req, res) => {
 
 app.post("/api/reviews", requireOrigin, async (req, res) => {
   const ip = getIp(req);
-  if (!allowRate(`review:${ip}`, 3, 24 * 60 * 60 * 1000)) {
-    return res.status(429).json({ ok: false, error: "С этого адреса уже отправлено слишком много отзывов." });
+  if (!allowRate(`review:${ip}`, 2, 24 * 60 * 60 * 1000)) {
+    return res.status(429).json({ ok: false, error: localized(req, "С этого адреса уже отправлено слишком много отзывов.", "Too many reviews were submitted from this address.") });
   }
   if (clean(req.body?.website, 100)) return res.json({ ok: true, published: false });
+  if (!validFormTiming(req.body?.formStartedAt)) {
+    return res.status(400).json({ ok: false, error: localized(req, "Форма отправлена слишком быстро или устарела. Обновите страницу.", "The form was submitted too quickly or has expired. Refresh the page.") });
+  }
+  try {
+    if (!(await verifyTurnstile(req.body?.turnstileToken, ip))) {
+      return res.status(403).json({ ok: false, error: localized(req, "Проверка безопасности не пройдена.", "Security verification failed.") });
+    }
+  } catch (error) {
+    console.error(error);
+    return res.status(503).json({ ok: false, error: localized(req, "Защита формы временно недоступна.", "Form protection is temporarily unavailable.") });
+  }
 
   const name = clean(req.body?.name, 80);
   const projectType = clean(req.body?.projectType, 40);
   const rating = Number(req.body?.rating);
   const body = clean(req.body?.body, 1200);
   if (!name || !projectType || !Number.isInteger(rating) || rating < 1 || rating > 5 || body.length < 20) {
-    return res.status(400).json({ ok: false, error: "Проверьте поля отзыва." });
+    return res.status(400).json({ ok: false, error: localized(req, "Проверьте поля отзыва.", "Check the review fields.") });
   }
 
   try {
@@ -328,18 +449,24 @@ app.post("/api/reviews", requireOrigin, async (req, res) => {
     res.json({ ok: true, published: REVIEWS_AUTO_APPROVE, reviewId: inserted?.[0]?.id || null });
   } catch (error) {
     console.error(error);
-    res.status(503).json({ ok: false, error: "Не удалось сохранить отзыв." });
+    res.status(503).json({ ok: false, error: localized(req, "Не удалось сохранить отзыв.", "Could not save the review.") });
   }
 });
 
 app.post("/api/tickets", requireOrigin, upload.array("files", 5), async (req, res) => {
   const ip = getIp(req);
-  if (!allowRate(`ticket:${ip}`, 4, 10 * 60 * 1000)) {
-    return res.status(429).json({ ok: false, error: "Слишком много заявок. Попробуйте позже." });
+  if (!allowRate(`ticket:${ip}`, 3, 15 * 60 * 1000)) {
+    return res.status(429).json({ ok: false, error: localized(req, "Слишком много заявок. Попробуйте позже.", "Too many requests. Try again later.") });
   }
 
   try {
     if (clean(req.body?.website, 100)) return res.json({ ok: true });
+    if (!validFormTiming(req.body?.formStartedAt)) {
+      return res.status(400).json({ ok: false, error: localized(req, "Форма отправлена слишком быстро или устарела. Обновите страницу.", "The form was submitted too quickly or has expired. Refresh the page.") });
+    }
+    if (!(await verifyTurnstile(req.body?.turnstileToken, ip))) {
+      return res.status(403).json({ ok: false, error: localized(req, "Проверка безопасности не пройдена.", "Security verification failed.") });
+    }
 
     const category = clean(req.body?.category, 40);
     const clientName = clean(req.body?.clientName, 80);
@@ -351,9 +478,11 @@ app.post("/api/tickets", requireOrigin, upload.array("files", 5), async (req, re
     const files = Array.isArray(req.files) ? req.files : [];
     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
 
-    if (totalBytes > MAX_TOTAL_BYTES) return res.status(413).json({ ok: false, error: "Суммарный размер файлов превышает 30 МБ." });
-    if (!category || !clientName || !clientTelegram || description.length < 20 || !agreement) {
-      return res.status(400).json({ ok: false, error: "Проверьте обязательные поля и согласие с правилами." });
+    if (totalBytes > MAX_TOTAL_BYTES) return res.status(413).json({ ok: false, error: localized(req, "Суммарный размер файлов превышает 30 МБ.", "The total file size exceeds 30 MB.") });
+    const invalidFile = files.find(file => !fileMatchesSignature(file));
+    if (invalidFile) return res.status(415).json({ ok: false, error: localized(req, `Файл «${clean(invalidFile.originalname, 120)}» не прошёл проверку формата.`, `The file “${clean(invalidFile.originalname, 120)}” failed format validation.`) });
+    if (!category || !clientName || !validTelegram(clientTelegram) || description.length < 20 || !agreement) {
+      return res.status(400).json({ ok: false, error: localized(req, "Проверьте обязательные поля, Telegram и согласие с правилами.", "Check the required fields, Telegram username, and rules agreement.") });
     }
 
     const id = ticketId();
@@ -398,8 +527,10 @@ app.post("/api/tickets", requireOrigin, upload.array("files", 5), async (req, re
   } catch (error) {
     console.error(error);
     const message = error?.message === "SERVER_NOT_CONFIGURED"
-      ? "Сервер Telegram ещё не настроен."
-      : "Не удалось отправить заявку.";
+      ? localized(req, "Сервер Telegram ещё не настроен.", "The Telegram server is not configured yet.")
+      : error?.message === "TURNSTILE_NOT_CONFIGURED"
+        ? localized(req, "Cloudflare Turnstile не настроен на сервере.", "Cloudflare Turnstile is not configured on the server.")
+        : localized(req, "Не удалось отправить заявку.", "Could not send the request.");
     res.status(500).json({ ok: false, error: message });
   }
 });
