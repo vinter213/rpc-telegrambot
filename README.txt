@@ -13,7 +13,8 @@ TURNSTILE_SECRET_KEY=секретный Secret Key из Cloudflare Turnstile
 Старые переменные оставить:
 TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
-TELEGRAM_MESSAGE_THREAD_ID (пусто для личного чата)
+TELEGRAM_EXTRA_CHAT_IDS (необязательно; дополнительные ID через запятую)
+TELEGRAM_MESSAGE_THREAD_ID (пусто для личного чата; применяется только к основному TELEGRAM_CHAT_ID)
 ALLOWED_ORIGIN=https://rpc-order-website.onrender.com
 SUPABASE_URL=https://PROJECT.supabase.co
 SUPABASE_SECRET_KEY=sb_secret_...
@@ -59,3 +60,16 @@ https://rpc-telegrambot.onrender.com/api/public-config
 Endpoint GET /api/currency определяет страну посетителя и возвращает курсы KZT, RUB, USD, EUR и GBP.
 Основной источник курсов — официальный RSS Национального банка Казахстана. Резервный источник — ExchangeRate-API.
 Дополнительные переменные окружения не нужны. Данные кэшируются в памяти сервера на 6 часов.
+
+
+НЕСКОЛЬКО TELEGRAM-ЧАТОВ
+-------------------------
+Основной чат оставь в TELEGRAM_CHAT_ID.
+Дополнительные чаты укажи в TELEGRAM_EXTRA_CHAT_IDS через запятую.
+
+Пример:
+TELEGRAM_CHAT_ID=6357246420
+TELEGRAM_EXTRA_CHAT_IDS=-1001234567890,987654321
+
+Все новые заявки и прикреплённые файлы будут отправляться во все указанные чаты.
+Если используется TELEGRAM_MESSAGE_THREAD_ID, он применяется только к основному TELEGRAM_CHAT_ID.

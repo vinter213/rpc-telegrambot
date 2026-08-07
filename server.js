@@ -7,7 +7,12 @@ const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+const PRIMARY_CHAT_ID = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+const EXTRA_CHAT_IDS = String(process.env.TELEGRAM_EXTRA_CHAT_IDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const CHAT_IDS = [...new Set([PRIMARY_CHAT_ID, ...EXTRA_CHAT_IDS].filter(Boolean))];
 const THREAD_ID = process.env.TELEGRAM_MESSAGE_THREAD_ID || "";
 const PRIMARY_ORIGIN = (process.env.ALLOWED_ORIGIN || "https://rpc-order-website.onrender.com").replace(/\/$/, "");
 const SUPABASE_URL_RAW = String(process.env.SUPABASE_URL || "").trim();
@@ -481,14 +486,13 @@ async function getStats() {
   return normalizeStats(result);
 }
 
-async function sendTelegramMessage(text) {
-  if (!BOT_TOKEN || !CHAT_ID) throw new Error("SERVER_NOT_CONFIGURED");
+async function sendTelegramMessageToChat(chatId, text, useThread = false) {
   const payload = {
-    chat_id: CHAT_ID,
+    chat_id: chatId,
     text,
     disable_web_page_preview: true
   };
-  if (THREAD_ID) payload.message_thread_id = Number(THREAD_ID);
+  if (useThread && THREAD_ID) payload.message_thread_id = Number(THREAD_ID);
 
   const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
@@ -498,15 +502,20 @@ async function sendTelegramMessage(text) {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) {
-    console.error("Telegram sendMessage error:", result);
+    console.error(`Telegram sendMessage error for chat ${chatId}:`, result);
     throw new Error("TELEGRAM_SEND_FAILED");
   }
 }
 
-async function sendTelegramFile(file, id, index, total) {
+async function sendTelegramMessage(text) {
+  if (!BOT_TOKEN || CHAT_IDS.length === 0) throw new Error("SERVER_NOT_CONFIGURED");
+  await Promise.all(CHAT_IDS.map((chatId, index) => sendTelegramMessageToChat(chatId, text, index === 0)));
+}
+
+async function sendTelegramFileToChat(chatId, file, id, index, total, useThread = false) {
   const form = new FormData();
-  form.append("chat_id", CHAT_ID);
-  if (THREAD_ID) form.append("message_thread_id", THREAD_ID);
+  form.append("chat_id", chatId);
+  if (useThread && THREAD_ID) form.append("message_thread_id", THREAD_ID);
   form.append("caption", `${id} · файл ${index + 1}/${total}\n${clean(file.originalname, 180)}`);
   form.append("document", new Blob([file.buffer], { type: file.mimetype || "application/octet-stream" }), clean(file.originalname, 180) || `file-${index + 1}`);
 
@@ -517,9 +526,14 @@ async function sendTelegramFile(file, id, index, total) {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) {
-    console.error("Telegram sendDocument error:", result);
+    console.error(`Telegram sendDocument error for chat ${chatId}:`, result);
     throw new Error("TELEGRAM_FILE_SEND_FAILED");
   }
+}
+
+async function sendTelegramFile(file, id, index, total) {
+  if (!BOT_TOKEN || CHAT_IDS.length === 0) throw new Error("SERVER_NOT_CONFIGURED");
+  await Promise.all(CHAT_IDS.map((chatId, targetIndex) => sendTelegramFileToChat(chatId, file, id, index, total, targetIndex === 0)));
 }
 
 app.get("/", (_req, res) => {
@@ -580,7 +594,8 @@ app.get("/api/currency", allowPublicRead, async (req, res) => {
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    configured: Boolean(BOT_TOKEN && CHAT_ID),
+    configured: Boolean(BOT_TOKEN && CHAT_IDS.length > 0),
+    telegramChats: CHAT_IDS.length,
     databaseConfigured: databaseConfigured(),
     databaseUrlValid: Boolean(SUPABASE_URL),
     databaseHost: SUPABASE_URL ? new URL(SUPABASE_URL).host : null,
